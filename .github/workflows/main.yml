@@ -6,25 +6,31 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 3600000
 
     steps:
       - name: Configure Core RDP Settings
+        shell: pwsh
         run: |
+          # Enable Remote Desktop & disable Network Level Authentication
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0 -Force
           Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name SecurityLayer -Value 0 -Force
+          
+          # Firewall rule for RDP
           netsh advfirewall firewall delete rule name="RDP-Tailscale" || $null
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          
+          # Restart RDP service
           Restart-Service -Name TermService -Force
-        shell: pwsh
 
       - name: Create RDP User from Secrets
+        shell: pwsh
         run: |
           $username = "${{ secrets.RDP_USERNAME }}"
           $password = "${{ secrets.RDP_PASSWORD }}"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          
+
           if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
               Write-Host "User $username exists — updating password"
               Set-LocalUser -Name $username -Password $securePass
@@ -36,16 +42,17 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
 
           echo "RDP_CREDS=User: $username | Password: $password" >> $env:GITHUB_ENV
-        shell: pwsh
 
       - name: Install Tailscale
-        run: |
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile "$env:TEMP\tailscale.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$env:TEMP\tailscale.msi`"", "/quiet", "/norestart" -Wait
-          Remove-Item "$env:TEMP\tailscale.msi" -Force
         shell: pwsh
+        run: |
+          $msiPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi" -OutFile $msiPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$msiPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $msiPath -Force
 
       - name: Start Tailscale
+        shell: pwsh
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-windows-runner
           $tsIP = $null
@@ -57,24 +64,24 @@ jobs:
           }
           if (-not $tsIP) { Write-Error "Tailscale IP not assigned"; exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-        shell: pwsh
 
       - name: Verify RDP Access
+        shell: pwsh
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          $ok = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          Write-Host "Tailscale hostname/IP: my-windows-runner"
+          $ok = Test-NetConnection -ComputerName "my-windows-runner" -Port 3389
           if (-not $ok.TcpTestSucceeded) { Write-Error "TCP connection to RDP failed"; exit 1 }
           Write-Host "RDP access verified!"
-        shell: pwsh
 
       - name: Keep Runner Alive
+        shell: pwsh
         run: |
-          Write-Host "=== RDP ==="
+          Write-Host "`n=== RDP ACCESS ==="
           Write-Host $env:RDP_CREDS
           Write-Host "Connect via Tailscale hostname: my-windows-runner"
-          Write-Host "=================="
+          Write-Host "==================`n"
+          
           while ($true) {
               Write-Host "[$(Get-Date)] RDP active..."
               Start-Sleep -Seconds 300
           }
-        shell: pwsh
