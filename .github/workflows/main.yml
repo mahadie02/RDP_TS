@@ -53,34 +53,41 @@ jobs:
       - name: Start Tailscale
         shell: pwsh
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=my-windows-runner
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --accept-routes
+          
+          # Wait for IP assignment
           $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          for ($i=0; $i -lt 10; $i++) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 | Select-String '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | ForEach-Object { $_.ToString().Trim() }
+              if ($tsIP) { break }
               Start-Sleep -Seconds 5
-              $retries++
           }
-          if (-not $tsIP) { Write-Error "Tailscale IP not assigned"; exit 1 }
+
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned"; exit 1
+          }
+
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP assigned: $tsIP"
 
       - name: Verify RDP Access
         shell: pwsh
         run: |
-          Write-Host "Tailscale hostname/IP: my-windows-runner"
-          $ok = Test-NetConnection -ComputerName "my-windows-runner" -Port 3389
+          $ip = $env:TAILSCALE_IP
+          Write-Host "Testing RDP access at $ip:3389..."
+          $ok = Test-NetConnection -ComputerName $ip -Port 3389
           if (-not $ok.TcpTestSucceeded) { Write-Error "TCP connection to RDP failed"; exit 1 }
-          Write-Host "RDP access verified!"
+          Write-Host "RDP access verified at IP: $ip!"
 
       - name: Keep Runner Alive
         shell: pwsh
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "`n=== RDP ACCESS INFO ==="
           Write-Host $env:RDP_CREDS
-          Write-Host "Connect via Tailscale hostname: my-windows-runner"
-          Write-Host "==================`n"
+          Write-Host "Tailscale IP Address: $env:TAILSCALE_IP"
+          Write-Host "========================`n"
           
           while ($true) {
-              Write-Host "[$(Get-Date)] RDP active..."
+              Write-Host "[$(Get-Date)] RDP active on $env:TAILSCALE_IP..."
               Start-Sleep -Seconds 300
           }
